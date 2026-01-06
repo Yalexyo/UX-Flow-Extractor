@@ -1,0 +1,5 @@
+{
+  "name": "UX Flow Extractor",
+  "description": "Upload a screen recording to automatically generate a visual user flow sitemap with screenshots and interaction logic using Gemini AI.",
+  "requestFramePermissions": []
+}
