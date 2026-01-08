@@ -3,9 +3,7 @@ import { extractFramesFromVideo } from './services/videoProcessor';
 import { analyzeFlowWithGemini } from './services/geminiService';
 import { Whiteboard, WhiteboardHandle } from './components/Whiteboard';
 import { AnalysisResult, AppState, FrameData } from './types';
-import { UploadCloud, Play, Loader2, AlertCircle, Download, RefreshCw, Layers } from 'lucide-react';
-// @ts-ignore
-import html2canvas from 'html2canvas';
+import { UploadCloud, Play, Loader2, AlertCircle, RefreshCw, Layers } from 'lucide-react';
 
 export default function App() {
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);

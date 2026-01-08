@@ -113,8 +113,9 @@ export const extractFramesFromVideo = async (
       }
       
       // Ensure we explicitly target the very end of the video
-      if (duration > 0.1 && (checkPoints.length === 0 || duration - checkPoints[checkPoints.length - 1] > 0.2)) {
-        checkPoints.push(duration - 0.1); 
+      // Reduced threshold from 0.2 to 0.05 to ensure we capture the final state even if close to the interval
+      if (duration > 0.05 && (checkPoints.length === 0 || duration - checkPoints[checkPoints.length - 1] > 0.05)) {
+        checkPoints.push(duration - 0.05); 
       }
 
       let currentCheckIndex = 0;
@@ -159,16 +160,15 @@ export const extractFramesFromVideo = async (
         }
 
         // Logic:
-        // 1. First Frame: ALWAYS capture. Ignore "boring" check (e.g. minimalist home screen).
-        // 2. Last Frame: Capture unless it's a duplicate of the previous one. Ignore "boring" check.
+        // 1. First Frame: ALWAYS capture.
+        // 2. Last Frame: ALWAYS capture. We force this because the final state of a flow 
+        //    (e.g. "Success" toast) is often critical, even if it looks similar to the previous frame (duplicate).
         // 3. Middle Frames: Must NOT be boring AND NOT be duplicate.
 
         let shouldCapture = false;
 
-        if (isFirstCheckpoint) {
+        if (isFirstCheckpoint || isLastCheckpoint) {
             shouldCapture = true;
-        } else if (isLastCheckpoint) {
-            shouldCapture = !isDuplicate; 
         } else {
             shouldCapture = !isBoring && !isDuplicate;
         }
