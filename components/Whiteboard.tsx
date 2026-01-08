@@ -140,6 +140,66 @@ export const Whiteboard = forwardRef<WhiteboardHandle, WhiteboardProps>(({ data,
             const element = document.getElementById(elementId);
             
             if (element) {
+                // STRATEGY: Clone the element and append to body at (0,0) with no transform.
+                // This isolates the capture from the current zoom/pan state of the Whiteboard.
+                // It ensures high resolution and prevents text visibility issues caused by off-screen rendering.
+                const clone = element.cloneNode(true) as HTMLElement;
+                
+                // Reset styling to ensure it's captured in its "ideal" state
+                clone.style.position = 'fixed';
+                clone.style.top = '0';
+                clone.style.left = '0';
+                clone.style.zIndex = '-9999'; // Hide behind everything
+                clone.style.transform = 'none'; // Remove any scaling
+                clone.style.margin = '0';
+                clone.style.width = '1024px'; // Force correct dimensions
+                clone.style.height = '800px';
+                clone.style.boxShadow = 'none'; // Optional: remove shadow for cleaner cut
+                
+                // --- EXPORT FIX: Text Layout Adjustments ---
+                // The text container is usually the last child (Image div is first, Text div is second)
+                const textContainer = clone.lastElementChild as HTMLElement;
+                if (textContainer) {
+                    // Switch to block layout to avoid flexbox vertical-centering clipping issues in html2canvas
+                    textContainer.style.display = 'block';
+                    // Add padding to visually simulate the original centered layout without relying on flex center
+                    textContainer.style.paddingTop = '40px'; 
+                    textContainer.style.paddingLeft = '32px'; 
+                    textContainer.style.paddingRight = '32px'; 
+                    
+                    // Allow container to fit content, prevent hard clipping
+                    textContainer.style.overflow = 'visible'; 
+                }
+
+                const clamped = clone.querySelectorAll('.line-clamp-1, .line-clamp-3');
+                clamped.forEach(el => {
+                   el.classList.remove('line-clamp-1', 'line-clamp-3');
+                   const hEl = el as HTMLElement;
+                   
+                   // CRITICAL FIXES FOR TEXT CLIPPING:
+                   // 1. Force block display and visible overflow to allow descenders (g, y, p) to show
+                   hEl.style.display = 'block';
+                   hEl.style.overflow = 'visible'; 
+                   hEl.style.textOverflow = 'clip'; // Remove ellipses
+                   
+                   // 2. Allow text to wrap naturally so it isn't cut off horizontally
+                   hEl.style.whiteSpace = 'normal'; 
+                   
+                   // 3. Unrestrict height so it fits all text
+                   hEl.style.height = 'auto'; 
+                   hEl.style.maxHeight = 'none';
+
+                   // 4. Set a generous line-height to prevent vertical clipping
+                   hEl.style.lineHeight = '1.4';
+                   
+                   // Minor tweak for title spacing since we removed flex gap
+                   if (el.tagName === 'H3') {
+                     hEl.style.marginBottom = '12px';
+                   }
+                });
+
+                document.body.appendChild(clone);
+
                 const yAxis = node.level + 1;
                 const xAxis = node.orderInLevel + 1;
                 let filePrefix = `${yAxis}.${xAxis}`;
@@ -149,18 +209,19 @@ export const Whiteboard = forwardRef<WhiteboardHandle, WhiteboardProps>(({ data,
                 const filename = `${filePrefix}-${safeLabel}.png`;
 
                 try {
-                    const canvas = await html2canvas(element, {
-                        scale: 2, 
+                    const canvas = await html2canvas(clone, {
+                        scale: 3, // High resolution (3x)
                         backgroundColor: '#ffffff', 
                         logging: false,
                         useCORS: true,
+                        allowTaint: true, // Allow cross-origin images if CORS headers present
                         onclone: (clonedDoc: Document) => {
+                           // Inject font smoothing for better text
                            const style = clonedDoc.createElement('style');
                            style.innerHTML = `
                              * { 
-                               font-feature-settings: "liga" 0, "clig" 0, "calt" 0 !important; 
-                               font-variant-ligatures: none !important;
-                               font-kerning: normal !important;
+                               -webkit-font-smoothing: antialiased;
+                               -moz-osx-font-smoothing: grayscale;
                              }
                            `;
                            clonedDoc.head.appendChild(style);
@@ -170,6 +231,8 @@ export const Whiteboard = forwardRef<WhiteboardHandle, WhiteboardProps>(({ data,
                     if (blob) zip.file(filename, blob);
                 } catch (err) {
                     console.error(`Failed to capture node ${node.id}`, err);
+                } finally {
+                    document.body.removeChild(clone);
                 }
             }
         }
@@ -292,8 +355,6 @@ export const Whiteboard = forwardRef<WhiteboardHandle, WhiteboardProps>(({ data,
             height: canvasSize.h,
           }}
         >
-          {/* REMOVED: SVG Lines rendering block */}
-
           {/* Nodes */}
           {nodes.map(node => {
             const frame = frames[node.frameIndex];

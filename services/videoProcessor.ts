@@ -8,10 +8,13 @@ const calculateSimilarity = (data1: Uint8ClampedArray, data2: Uint8ClampedArray)
   if (data1.length !== data2.length) return 0;
   
   let diffCount = 0;
-  const totalPixels = data1.length / 4;
+  // Use a larger step for diffing to be faster, 4 bytes = 1 pixel.
+  const step = 4; 
+  const totalPixels = data1.length / step;
   
-  // Optimization: Check every 4th pixel to speed up processing without losing much accuracy
-  const step = 4 * 4; 
+  // Early Exit Threshold: If > 1% different, it's a new frame.
+  const maxDiffPixels = totalPixels * 0.01; 
+
   for (let i = 0; i < data1.length; i += step) {
     const rDiff = Math.abs(data1[i] - data2[i]);
     const gDiff = Math.abs(data1[i + 1] - data2[i + 1]);
@@ -20,24 +23,24 @@ const calculateSimilarity = (data1: Uint8ClampedArray, data2: Uint8ClampedArray)
     // If the color difference of a pixel is significant
     if (rDiff + gDiff + bDiff > 40) {
       diffCount++;
+      // Optimization: If frames are already too different, stop checking
+      if (diffCount > maxDiffPixels) {
+        return 0; 
+      }
     }
   }
   
-  // Adjusted calculation: normalize based on the step size
-  return 1 - (diffCount / (totalPixels / (step/4)));
+  return 1 - (diffCount / totalPixels);
 };
 
 /**
  * Checks if an image is "boring" (low complexity/entropy).
- * Useful for filtering out blank loading screens, fade-to-black transitions, 
- * or screens with just a tiny spinner in the middle.
  */
 const isLowComplexity = (data: Uint8ClampedArray): boolean => {
-  const step = 4 * 10; // Sample every 10th pixel
+  const step = 4 * 5; // Sample every 5th pixel for complexity
   let rSum = 0, gSum = 0, bSum = 0;
   let count = 0;
 
-  // 1. Calculate Average Color
   for (let i = 0; i < data.length; i += step) {
     rSum += data[i];
     gSum += data[i + 1];
@@ -49,7 +52,6 @@ const isLowComplexity = (data: Uint8ClampedArray): boolean => {
   const avgG = gSum / count;
   const avgB = bSum / count;
 
-  // 2. Calculate Standard Deviation (Variance from average)
   let varianceSum = 0;
   for (let i = 0; i < data.length; i += step) {
     const dr = data[i] - avgR;
@@ -61,37 +63,27 @@ const isLowComplexity = (data: Uint8ClampedArray): boolean => {
   const meanVariance = varianceSum / count;
   const stdDev = Math.sqrt(meanVariance);
 
-  // Thresholds explained:
-  // < 5: Pure solid color (Black screen, White screen)
-  // 5 - 20: Very flat gradients or solid color with minor noise
-  // 20 - 35: Loading screens with small spinners or very sparse text
-  // > 35: Standard UI pages (even minimal login screens usually hit 40+)
-  
-  return stdDev < 30; 
+  return stdDev < 5; 
 };
 
 /**
  * Extracts frames from a video file.
- * Strategy: High Frequency Sampling + Aggressive Filtering.
- * We scan often (0.6s) to catch fast interactions, but use strict complexity 
- * and deduplication checks to remove the noise.
  */
 export const extractFramesFromVideo = async (
   videoFile: File,
-  scanInterval: number = 0.6, 
-  maxFrames: number = 100
+  scanInterval: number = 0.25, // Adjusted to 4fps for better efficiency while maintaining good coverage
+  maxFrames: number = 600
 ): Promise<FrameData[]> => {
   return new Promise((resolve, reject) => {
     const video = document.createElement('video');
-    
-    // Main canvas for final output
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     
-    // Tiny canvas for fast pixel diffing and complexity check
     const diffCanvas = document.createElement('canvas');
     const diffCtx = diffCanvas.getContext('2d');
-    const DIFF_SIZE = 200; 
+    // Reduced size for faster diffing (100x100 = 10k pixels)
+    // 100px is sufficient to detect UI changes
+    const DIFF_SIZE = 100; 
     diffCanvas.width = DIFF_SIZE;
     diffCanvas.height = DIFF_SIZE;
 
@@ -106,23 +98,37 @@ export const extractFramesFromVideo = async (
 
     video.addEventListener('loadeddata', async () => {
       const duration = video.duration;
-      
       const checkPoints: number[] = [];
-      for (let t = 0; t < duration; t += scanInterval) {
+      
+      // 1. Force Start Frame (Time 0)
+      checkPoints.push(0);
+      
+      // 2. Add interval checkpoints
+      for (let t = scanInterval; t < duration; t += scanInterval) {
         checkPoints.push(t);
       }
       
-      // Ensure we explicitly target the very end of the video
-      // Reduced threshold from 0.2 to 0.05 to ensure we capture the final state even if close to the interval
-      if (duration > 0.05 && (checkPoints.length === 0 || duration - checkPoints[checkPoints.length - 1] > 0.05)) {
-        checkPoints.push(duration - 0.05); 
+      // 3. Force End Frame
+      // We use duration - 0.05s to avoid potential issues with seeking exactly to the end (EOF)
+      // which sometimes results in a black frame or error.
+      const lastTime = Math.max(0, duration - 0.05);
+      
+      // Only add if it's not too close to the last interval point (avoid duplicates)
+      if (checkPoints.length === 0 || lastTime - checkPoints[checkPoints.length - 1] > 0.1) {
+         checkPoints.push(lastTime);
       }
 
       let currentCheckIndex = 0;
       
-      const scale = 1.0; 
-      canvas.width = video.videoWidth * scale;
-      canvas.height = video.videoHeight * scale;
+      // OPTIMIZATION: Limit output resolution
+      // Processing 4K frames is slow and unnecessary for AI analysis.
+      // Cap max dimension to 1500px to speed up toDataURL() and reduce memory usage.
+      const MAX_DIMENSION = 1500;
+      const maxSide = Math.max(video.videoWidth, video.videoHeight);
+      const scale = maxSide > MAX_DIMENSION ? MAX_DIMENSION / maxSide : 1.0;
+
+      canvas.width = Math.floor(video.videoWidth * scale);
+      canvas.height = Math.floor(video.videoHeight * scale);
 
       const processNextCheckpoint = () => {
         if (currentCheckIndex >= checkPoints.length || frames.length >= maxFrames) {
@@ -138,36 +144,31 @@ export const extractFramesFromVideo = async (
       video.addEventListener('seeked', () => {
         if (!ctx || !diffCtx) return;
 
-        // A. Draw to diff canvas for comparison/analysis
+        // Draw small version for fast analysis
         diffCtx.drawImage(video, 0, 0, DIFF_SIZE, DIFF_SIZE);
         const currentDiffData = diffCtx.getImageData(0, 0, DIFF_SIZE, DIFF_SIZE).data;
 
-        // Flags
-        const isFirstCheckpoint = currentCheckIndex === 0;
-        const isLastCheckpoint = currentCheckIndex === checkPoints.length - 1;
+        // Determine critical frames
+        const isStart = currentCheckIndex === 0;
+        const isEnd = currentCheckIndex === checkPoints.length - 1;
 
-        // B. Complexity Check
         const isBoring = isLowComplexity(currentDiffData);
 
-        // C. Deduplication Check
         let isDuplicate = false;
-        if (lastCapturedDiffData) {
+        // Don't check duplication for the very first frame
+        if (lastCapturedDiffData && !isStart) {
           const similarity = calculateSimilarity(lastCapturedDiffData, currentDiffData);
-          // If 90% identical, we consider it the same screen
-          if (similarity > 0.90) {
+          if (similarity > 0.99) {
             isDuplicate = true;
           }
         }
 
-        // Logic:
-        // 1. First Frame: ALWAYS capture.
-        // 2. Last Frame: ALWAYS capture. We force this because the final state of a flow 
-        //    (e.g. "Success" toast) is often critical, even if it looks similar to the previous frame (duplicate).
-        // 3. Middle Frames: Must NOT be boring AND NOT be duplicate.
-
+        // Capture Logic:
+        // 1. ALWAYS capture Start and End frames.
+        // 2. For others, capture only if unique AND not boring.
         let shouldCapture = false;
 
-        if (isFirstCheckpoint || isLastCheckpoint) {
+        if (isStart || isEnd) {
             shouldCapture = true;
         } else {
             shouldCapture = !isBoring && !isDuplicate;
@@ -175,7 +176,8 @@ export const extractFramesFromVideo = async (
         
         if (shouldCapture) {
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.85); 
+          // 0.8 quality is a good balance for speed/size
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.8); 
           
           frames.push({
             time: video.currentTime,
@@ -184,12 +186,10 @@ export const extractFramesFromVideo = async (
           lastCapturedDiffData = currentDiffData;
         } 
         
-        // D. Move to next
         currentCheckIndex++;
         processNextCheckpoint();
       });
 
-      // Start the loop
       processNextCheckpoint();
     });
 
