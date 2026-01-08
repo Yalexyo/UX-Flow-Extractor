@@ -111,9 +111,11 @@ export const extractFramesFromVideo = async (
         
         if (lastCapturedDiffData) {
           const similarity = calculateSimilarity(lastCapturedDiffData, currentDiffData);
-          // Threshold: If > 99% similar, assume it's the same screen.
-          // Increased from 0.98 to 0.99 to capture very subtle changes.
-          if (similarity > 0.99) {
+          // Threshold Adjustment: 
+          // Previous value was 0.99 (99%), which was too sensitive and captured duplicate-like screens.
+          // Adjusted to 0.92 (92%) to ignore minor changes (like slight scrolls or loading spinners)
+          // and treat screens with high visual overlap as the same node.
+          if (similarity > 0.92) {
             isDifferent = false;
           }
         }
@@ -122,8 +124,9 @@ export const extractFramesFromVideo = async (
         const isLastCheckpoint = currentCheckIndex === checkPoints.length - 1;
         if (frames.length === 0 || isLastCheckpoint) {
              isDifferent = true;
-             // Dedupe last frame if practically identical (99.8%)
-             if (lastCapturedDiffData && calculateSimilarity(lastCapturedDiffData, currentDiffData) > 0.998) {
+             // Dedupe last frame if practically identical to the previous capture
+             // Threshold relaxed to 0.95 for the final frame as well
+             if (lastCapturedDiffData && calculateSimilarity(lastCapturedDiffData, currentDiffData) > 0.95) {
                  isDifferent = false; 
              }
         }

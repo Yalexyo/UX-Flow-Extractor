@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { extractFramesFromVideo } from './services/videoProcessor';
 import { analyzeFlowWithGemini } from './services/geminiService';
-import { Whiteboard } from './components/Whiteboard';
+import { Whiteboard, WhiteboardHandle } from './components/Whiteboard';
 import { AnalysisResult, AppState, FrameData } from './types';
-import { UploadCloud, Play, Loader2, AlertCircle, Download, RefreshCw, Image as ImageIcon } from 'lucide-react';
+import { UploadCloud, Play, Loader2, AlertCircle, Download, RefreshCw, Layers } from 'lucide-react';
 // @ts-ignore
 import html2canvas from 'html2canvas';
 
@@ -14,6 +14,9 @@ export default function App() {
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [statusMsg, setStatusMsg] = useState<string>("");
   const [isExporting, setIsExporting] = useState<boolean>(false);
+  const [exportProgress, setExportProgress] = useState<string>("");
+  
+  const whiteboardRef = useRef<WhiteboardHandle>(null);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -41,50 +44,23 @@ export default function App() {
     }
   };
 
-  const handleExportImage = async () => {
-    if (isExporting) return;
-    
-    const element = document.getElementById('whiteboard-canvas');
-    if (!element) {
-        alert("Could not find sitemap content.");
-        return;
-    }
+  const handleExportCards = async () => {
+    if (isExporting || !whiteboardRef.current) return;
     
     try {
         setIsExporting(true);
-        // Capture logic updated for Zoom/Pan Canvas
-        const canvas = await html2canvas(element, {
-            scale: 3, // Increased scale to 3 for better text rendering precision
-            useCORS: true,
-            backgroundColor: '#f8fafc',
-            logging: false,
-            // Important: We need to temporarily reset the transform logic inside html2canvas 
-            // so we get the full 100% scale image, not what the user is currently zoomed into.
-            onclone: (clonedDoc) => {
-                const el = clonedDoc.getElementById('whiteboard-canvas');
-                if (el) {
-                    // Reset transform to show full canvas at 100% scale in the screenshot
-                    el.style.transform = 'none';
-                    // Ensure the cloned element has the full dimensions
-                    el.style.width = element.style.width;
-                    el.style.height = element.style.height;
-                }
-            }
+        setExportProgress("Preparing...");
+        
+        await whiteboardRef.current.exportCards((current, total) => {
+            setExportProgress(`Exporting ${current}/${total}`);
         });
         
-        const dataUrl = canvas.toDataURL('image/png');
-        
-        const downloadAnchorNode = document.createElement('a');
-        downloadAnchorNode.setAttribute("href", dataUrl);
-        downloadAnchorNode.setAttribute("download", "ux_flow_sitemap.png");
-        document.body.appendChild(downloadAnchorNode);
-        downloadAnchorNode.click();
-        downloadAnchorNode.remove();
     } catch (err) {
         console.error("Export failed", err);
-        alert("Failed to export image.");
+        alert("Failed to export cards.");
     } finally {
         setIsExporting(false);
+        setExportProgress("");
     }
   };
 
@@ -111,13 +87,13 @@ export default function App() {
            {appState === AppState.COMPLETE && (
              <>
                <button 
-                 onClick={handleExportImage}
+                 onClick={handleExportCards}
                  disabled={isExporting}
                  className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 border border-transparent hover:border-indigo-100 rounded-md transition-all disabled:opacity-50 disabled:cursor-wait"
-                 title="Export Sitemap as High-Res Image"
+                 title="Download all screens as separate cards (ZIP)"
                >
-                 {isExporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImageIcon className="w-4 h-4" />}
-                 <span>{isExporting ? 'Exporting...' : 'Export Image'}</span>
+                 {isExporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Layers className="w-4 h-4" />}
+                 <span>{isExporting ? exportProgress : 'Export Cards (ZIP)'}</span>
                </button>
 
                <div className="h-6 w-px bg-slate-200 mx-1"></div>
@@ -189,7 +165,11 @@ export default function App() {
 
         {/* COMPLETE STATE: Whiteboard */}
         {appState === AppState.COMPLETE && analysisResult && (
-          <Whiteboard data={analysisResult} frames={frames} />
+          <Whiteboard 
+            ref={whiteboardRef}
+            data={analysisResult} 
+            frames={frames} 
+          />
         )}
 
         {/* ERROR STATE */}
