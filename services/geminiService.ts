@@ -8,7 +8,9 @@ The interface may be in Chinese, English, or other languages. You must be able t
 
 You need to reconstruct the "User Flow Sitemap" by following these steps:
 
-1. **Identify Screens**: Identify distinct, unique "Screens" or "Pages". Ignore transition frames (blur, scrolling blur, half-swiped pages, loading spinners) or duplicates.
+1. **Identify Screens**: Identify distinct, unique "Screens" or "Pages". 
+   - **CRITICAL**: Ignore transition frames, blank loading screens, skeletons, or spinners. Only document fully rendered UI states.
+   - Ignore duplicates that are visually identical to the previous screen.
 2. **Identify Interactions**: Identify the interactions (flows) that connect these screens based on the chronological sequence.
    - For Mobile: Look for taps, swipes.
    - For Web/Desktop: Look for mouse clicks, hover states, or cursor movements leading to changes.
@@ -17,7 +19,7 @@ You need to reconstruct the "User Flow Sitemap" by following these steps:
    - For 'label', use a short, concise name (2-6 words) suitable for a filename (e.g. "Product Detail", "Settings", "Dashboard", "Login Page").
    - For 'description', briefly describe the screen's purpose in the same language as the UI.
    - For 'edges.label', describe the action (e.g., "点击[按钮]" / "Click [Button]", "Tap [Icon]").
-4. **Robustness**: The frames are chronological. If Frame 1 is the Home Page and Frame 3 is the Settings Page, and Frame 2 was a transition, link Home -> Settings.
+4. **Robustness**: The frames are chronological. If Frame 1 is the Home Page and Frame 3 is the Settings Page, and Frame 2 was a loading spinner, link Home -> Settings directly.
 `;
 
 export const analyzeFlowWithGemini = async (frames: FrameData[]): Promise<AnalysisResult> => {

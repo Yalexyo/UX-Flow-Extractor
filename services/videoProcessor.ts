@@ -2,7 +2,6 @@ import { FrameData } from '../types';
 
 /**
  * Calculates the similarity between two image data arrays.
- * Uses a pixel comparison to be performant.
  * Returns a value between 0 (completely different) and 1 (identical).
  */
 const calculateSimilarity = (data1: Uint8ClampedArray, data2: Uint8ClampedArray): number => {
@@ -11,34 +10,78 @@ const calculateSimilarity = (data1: Uint8ClampedArray, data2: Uint8ClampedArray)
   let diffCount = 0;
   const totalPixels = data1.length / 4;
   
-  // Optimization: Check every pixel (RGBA)
-  for (let i = 0; i < data1.length; i += 4) {
+  // Optimization: Check every 4th pixel to speed up processing without losing much accuracy
+  const step = 4 * 4; 
+  for (let i = 0; i < data1.length; i += step) {
     const rDiff = Math.abs(data1[i] - data2[i]);
     const gDiff = Math.abs(data1[i + 1] - data2[i + 1]);
     const bDiff = Math.abs(data1[i + 2] - data2[i + 2]);
     
     // If the color difference of a pixel is significant
-    // Threshold lowered to 20 to be extremely sensitive
-    if (rDiff + gDiff + bDiff > 20) {
+    if (rDiff + gDiff + bDiff > 40) {
       diffCount++;
     }
   }
   
-  return 1 - (diffCount / totalPixels);
+  // Adjusted calculation: normalize based on the step size
+  return 1 - (diffCount / (totalPixels / (step/4)));
 };
 
 /**
- * Extracts frames from a video file using smart deduplication.
- * Strategy:
- * 1. Scan frequently (every 0.5s).
- * 2. Compare current frame with the last captured frame using high-res diff.
- * 3. Only keep frames that are visually different ( deduplication ).
- * 4. Always ensure the final frame of the video is captured.
+ * Checks if an image is "boring" (low complexity/entropy).
+ * Useful for filtering out blank loading screens, fade-to-black transitions, 
+ * or screens with just a tiny spinner in the middle.
+ */
+const isLowComplexity = (data: Uint8ClampedArray): boolean => {
+  const step = 4 * 10; // Sample every 10th pixel
+  let rSum = 0, gSum = 0, bSum = 0;
+  let count = 0;
+
+  // 1. Calculate Average Color
+  for (let i = 0; i < data.length; i += step) {
+    rSum += data[i];
+    gSum += data[i + 1];
+    bSum += data[i + 2];
+    count++;
+  }
+
+  const avgR = rSum / count;
+  const avgG = gSum / count;
+  const avgB = bSum / count;
+
+  // 2. Calculate Standard Deviation (Variance from average)
+  let varianceSum = 0;
+  for (let i = 0; i < data.length; i += step) {
+    const dr = data[i] - avgR;
+    const dg = data[i + 1] - avgG;
+    const db = data[i + 2] - avgB;
+    varianceSum += (dr*dr + dg*dg + db*db);
+  }
+  
+  const meanVariance = varianceSum / count;
+  const stdDev = Math.sqrt(meanVariance);
+
+  // Thresholds explained:
+  // < 5: Pure solid color (Black screen, White screen)
+  // 5 - 20: Very flat gradients or solid color with minor noise
+  // 20 - 35: Loading screens with small spinners or very sparse text
+  // > 35: Standard UI pages (even minimal login screens usually hit 40+)
+  
+  return stdDev < 30; 
+};
+
+/**
+ * Extracts frames from a video file.
+ * Strategy: High Frequency Sampling + Aggressive Filtering.
+ * We scan often (0.6s) to catch fast interactions, but use strict complexity 
+ * and deduplication checks to remove the noise.
  */
 export const extractFramesFromVideo = async (
   videoFile: File,
-  scanInterval: number = 0.5, 
-  maxFrames: number = 80
+  // Reduced to 0.6s to ensure we catch fast interactions.
+  // We rely on 'isLowComplexity' and deduplication to filter out the noise.
+  scanInterval: number = 0.6, 
+  maxFrames: number = 100 // Increased limit since we scan faster
 ): Promise<FrameData[]> => {
   return new Promise((resolve, reject) => {
     const video = document.createElement('video');
@@ -47,11 +90,10 @@ export const extractFramesFromVideo = async (
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     
-    // Tiny canvas for fast pixel diffing
-    // Size 320 ensures we can detect content/text changes accurately
+    // Tiny canvas for fast pixel diffing and complexity check
     const diffCanvas = document.createElement('canvas');
     const diffCtx = diffCanvas.getContext('2d');
-    const DIFF_SIZE = 320; 
+    const DIFF_SIZE = 200; // Smaller size for faster processing
     diffCanvas.width = DIFF_SIZE;
     diffCanvas.height = DIFF_SIZE;
 
@@ -67,23 +109,18 @@ export const extractFramesFromVideo = async (
     video.addEventListener('loadeddata', async () => {
       const duration = video.duration;
       
-      // 1. Build a schedule of timestamps to check
       const checkPoints: number[] = [];
       for (let t = 0; t < duration; t += scanInterval) {
         checkPoints.push(t);
       }
       
-      // 2. Crucial: Ensure the exact end of the video is checked
-      if (duration - (checkPoints[checkPoints.length - 1] || 0) > 0.1) {
-        checkPoints.push(duration);
-      } else if (checkPoints.length > 0) {
-        checkPoints[checkPoints.length - 1] = duration;
+      if (duration > 0.5 && (checkPoints.length === 0 || duration - checkPoints[checkPoints.length - 1] > 0.5)) {
+        checkPoints.push(duration - 0.1);
       }
 
       let currentCheckIndex = 0;
       
-      // Set output resolution
-      // Changed from 0.5 to 1.0 to ensure high clarity for UI text
+      // High resolution for clear text reading
       const scale = 1.0; 
       canvas.width = video.videoWidth * scale;
       canvas.height = video.videoHeight * scale;
@@ -102,47 +139,38 @@ export const extractFramesFromVideo = async (
       video.addEventListener('seeked', () => {
         if (!ctx || !diffCtx) return;
 
-        // A. Draw to diff canvas for comparison
+        // A. Draw to diff canvas for comparison/analysis
         diffCtx.drawImage(video, 0, 0, DIFF_SIZE, DIFF_SIZE);
         const currentDiffData = diffCtx.getImageData(0, 0, DIFF_SIZE, DIFF_SIZE).data;
 
-        // B. Decide if we should keep this frame
-        let isDifferent = true;
-        
+        // B. Complexity Check: Filter out "boring" screens (loading, transitions)
+        const isBoring = isLowComplexity(currentDiffData);
+
+        // C. Deduplication Check
+        let isDuplicate = false;
         if (lastCapturedDiffData) {
           const similarity = calculateSimilarity(lastCapturedDiffData, currentDiffData);
-          // Threshold Adjustment: 
-          // Previous value was 0.99 (99%), which was too sensitive and captured duplicate-like screens.
-          // Adjusted to 0.92 (92%) to ignore minor changes (like slight scrolls or loading spinners)
-          // and treat screens with high visual overlap as the same node.
-          if (similarity > 0.92) {
-            isDifferent = false;
+          // If 90% identical, we consider it the same screen (skip it).
+          // This prevents generating 5 frames for a static screen shown for 3 seconds.
+          if (similarity > 0.90) {
+            isDuplicate = true;
           }
         }
 
-        // Always keep the very first frame and the very last frame
-        const isLastCheckpoint = currentCheckIndex === checkPoints.length - 1;
-        if (frames.length === 0 || isLastCheckpoint) {
-             isDifferent = true;
-             // Dedupe last frame if practically identical to the previous capture
-             // Threshold relaxed to 0.95 for the final frame as well
-             if (lastCapturedDiffData && calculateSimilarity(lastCapturedDiffData, currentDiffData) > 0.95) {
-                 isDifferent = false; 
-             }
-        }
-
-        // C. Capture high-res if different
-        if (isDifferent) {
+        const isFirst = frames.length === 0;
+        
+        if (!isBoring && (!isDuplicate || isFirst)) {
+          // It's a valid, new, content-rich screen
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          // Increased quality from 0.6 to 0.85 for clearer text
           const dataUrl = canvas.toDataURL('image/jpeg', 0.85); 
+          
           frames.push({
             time: video.currentTime,
             dataUrl: dataUrl
           });
           lastCapturedDiffData = currentDiffData;
-        }
-
+        } 
+        
         // D. Move to next
         currentCheckIndex++;
         processNextCheckpoint();
