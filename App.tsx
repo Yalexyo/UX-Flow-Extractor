@@ -75,7 +75,7 @@ export default function App() {
     <div className="flex flex-col h-screen w-full font-sans text-slate-800">
       {/* Header */}
       <header className="h-16 border-b bg-white flex items-center justify-between px-6 z-10 shadow-sm shrink-0">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 cursor-pointer" onClick={handleRegenerateSitemap}>
           <div className="bg-indigo-600 p-1.5 rounded-lg">
              <Play className="w-5 h-5 text-white fill-current" />
           </div>
@@ -101,10 +101,10 @@ export default function App() {
                <button 
                  onClick={handleRegenerateSitemap}
                  className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-md transition-all"
-                 title="Regenerate Sitemap (Upload New Video)"
+                 title="Upload a new video to start over"
                >
                  <RefreshCw className="w-4 h-4" />
-                 <span>Regenerate Sitemap</span>
+                 <span>Upload New Video</span>
                </button>
              </>
            )}

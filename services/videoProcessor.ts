@@ -78,10 +78,8 @@ const isLowComplexity = (data: Uint8ClampedArray): boolean => {
  */
 export const extractFramesFromVideo = async (
   videoFile: File,
-  // Reduced to 0.6s to ensure we catch fast interactions.
-  // We rely on 'isLowComplexity' and deduplication to filter out the noise.
   scanInterval: number = 0.6, 
-  maxFrames: number = 100 // Increased limit since we scan faster
+  maxFrames: number = 100
 ): Promise<FrameData[]> => {
   return new Promise((resolve, reject) => {
     const video = document.createElement('video');
@@ -93,7 +91,7 @@ export const extractFramesFromVideo = async (
     // Tiny canvas for fast pixel diffing and complexity check
     const diffCanvas = document.createElement('canvas');
     const diffCtx = diffCanvas.getContext('2d');
-    const DIFF_SIZE = 200; // Smaller size for faster processing
+    const DIFF_SIZE = 200; 
     diffCanvas.width = DIFF_SIZE;
     diffCanvas.height = DIFF_SIZE;
 
@@ -114,13 +112,13 @@ export const extractFramesFromVideo = async (
         checkPoints.push(t);
       }
       
-      if (duration > 0.5 && (checkPoints.length === 0 || duration - checkPoints[checkPoints.length - 1] > 0.5)) {
-        checkPoints.push(duration - 0.1);
+      // Ensure we explicitly target the very end of the video
+      if (duration > 0.1 && (checkPoints.length === 0 || duration - checkPoints[checkPoints.length - 1] > 0.2)) {
+        checkPoints.push(duration - 0.1); 
       }
 
       let currentCheckIndex = 0;
       
-      // High resolution for clear text reading
       const scale = 1.0; 
       canvas.width = video.videoWidth * scale;
       canvas.height = video.videoHeight * scale;
@@ -143,24 +141,39 @@ export const extractFramesFromVideo = async (
         diffCtx.drawImage(video, 0, 0, DIFF_SIZE, DIFF_SIZE);
         const currentDiffData = diffCtx.getImageData(0, 0, DIFF_SIZE, DIFF_SIZE).data;
 
-        // B. Complexity Check: Filter out "boring" screens (loading, transitions)
+        // Flags
+        const isFirstCheckpoint = currentCheckIndex === 0;
+        const isLastCheckpoint = currentCheckIndex === checkPoints.length - 1;
+
+        // B. Complexity Check
         const isBoring = isLowComplexity(currentDiffData);
 
         // C. Deduplication Check
         let isDuplicate = false;
         if (lastCapturedDiffData) {
           const similarity = calculateSimilarity(lastCapturedDiffData, currentDiffData);
-          // If 90% identical, we consider it the same screen (skip it).
-          // This prevents generating 5 frames for a static screen shown for 3 seconds.
+          // If 90% identical, we consider it the same screen
           if (similarity > 0.90) {
             isDuplicate = true;
           }
         }
 
-        const isFirst = frames.length === 0;
+        // Logic:
+        // 1. First Frame: ALWAYS capture. Ignore "boring" check (e.g. minimalist home screen).
+        // 2. Last Frame: Capture unless it's a duplicate of the previous one. Ignore "boring" check.
+        // 3. Middle Frames: Must NOT be boring AND NOT be duplicate.
+
+        let shouldCapture = false;
+
+        if (isFirstCheckpoint) {
+            shouldCapture = true;
+        } else if (isLastCheckpoint) {
+            shouldCapture = !isDuplicate; 
+        } else {
+            shouldCapture = !isBoring && !isDuplicate;
+        }
         
-        if (!isBoring && (!isDuplicate || isFirst)) {
-          // It's a valid, new, content-rich screen
+        if (shouldCapture) {
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
           const dataUrl = canvas.toDataURL('image/jpeg', 0.85); 
           
