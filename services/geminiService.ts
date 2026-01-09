@@ -8,18 +8,25 @@ The interface may be in Chinese, English, or other languages. You must be able t
 
 You need to reconstruct the "User Flow Sitemap" by following these steps:
 
-1. **Identify Screens**: Identify distinct, unique "Screens" or "Pages". 
-   - **CRITICAL**: Ignore transition frames, blank loading screens, skeletons, or spinners. Only document fully rendered UI states.
-   - Ignore duplicates that are visually identical to the previous screen.
+1. **Identify Screens**: Identify distinct UI states.
+   - **IMPORTANT**: Do NOT aggressively filter out similar screens. If two frames look 80-90% similar but have small changes (e.g., a keyboard appearing, a menu expanding, or text being typed), KEEP both screens.
+   - **Naming Strategy for Similarity**: If two screens are visually similar (>80%), assign them the EXACT SAME 'label' (e.g., both named "Login Page"). 
+   - Use the 'description' to distinguish them (e.g., "Empty state" vs "Typing password").
+   - This shared naming allows for "indirect deduplication" during export/review while preserving the granular flow details.
+   - Only ignore frames that are 100% identical duplicates or completely broken/blank frames.
+
 2. **Identify Interactions**: Identify the interactions (flows) that connect these screens based on the chronological sequence.
    - For Mobile: Look for taps, swipes.
    - For Web/Desktop: Look for mouse clicks, hover states, or cursor movements leading to changes.
+   - If multiple screens have the same Label (e.g., Login -> Login), describe the micro-interaction (e.g., "User types email").
+
 3. **Language Handling**: 
    - Analyze the text on the UI (including Chinese) to understand the context.
-   - For 'label', use a short, concise name (2-6 words) suitable for a filename (e.g. "Product Detail", "Settings", "Dashboard", "Login Page").
-   - For 'description', briefly describe the screen's purpose in the same language as the UI.
+   - For 'label', use a short, concise name (2-6 words) suitable for a filename (e.g. "Product Detail", "Settings").
    - For 'edges.label', describe the action (e.g., "点击[按钮]" / "Click [Button]", "Tap [Icon]").
-4. **Robustness**: The frames are chronological. If Frame 1 is the Home Page and Frame 3 is the Settings Page, and Frame 2 was a loading spinner, link Home -> Settings directly.
+   - For 'description', briefly describe the screen's purpose and state.
+
+4. **Robustness**: The frames are chronological. Ensure the flow connects logically from start to end.
 `;
 
 export const analyzeFlowWithGemini = async (frames: FrameData[]): Promise<AnalysisResult> => {
@@ -63,9 +70,9 @@ export const analyzeFlowWithGemini = async (frames: FrameData[]): Promise<Analys
         items: {
           type: Type.OBJECT,
           properties: {
-            id: { type: Type.STRING, description: "Unique ID (e.g., 'home', 'settings')" },
-            label: { type: Type.STRING, description: "Short name of the screen (in UI language)" },
-            description: { type: Type.STRING, description: "Brief description of the screen's purpose" },
+            id: { type: Type.STRING, description: "Unique ID for this specific state (must be unique, e.g., 'login_step1', 'login_step2')" },
+            label: { type: Type.STRING, description: "Shared name for the screen type (e.g., 'Login Page'). Use same label for similar screens." },
+            description: { type: Type.STRING, description: "Brief description of the specific state (e.g. 'Keyboard opens')" },
             frameIndex: { type: Type.INTEGER, description: "The index of the frame that best represents this screen (0-based index from input)." }
           },
           required: ["id", "label", "description", "frameIndex"]

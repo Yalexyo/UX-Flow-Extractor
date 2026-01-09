@@ -30,98 +30,56 @@ interface LayoutNode {
 
 // --- Layout Algorithm ---
 const calculateInitialLayout = (data: AnalysisResult): { nodes: LayoutNode[], width: number, height: number } => {
-  // 1. Adjusted dimensions for Web Page compatibility
-  // Increased width to 1024px to accommodate desktop screenshots without cropping horizontally.
+  // Layout Constraints per user request
   const nodeWidth = 1024; 
-  const nodeHeight = 800; // Fixed total height
-  const gapX = 100; 
-  const gapY = 150; 
+  const nodeHeight = 800; 
+  const gapX = 5; // Reduced gap to 5px
+  const gapY = 5; // Reduced gap to 5px
+  const maxColumns = 5; // Max 5 cards per row
 
-  const levels: Record<string, number> = {};
-  const processed = new Set<string>();
-  const incomingEdges = new Set(data.edges.map(e => e.toId));
-  
-  const roots = data.screens.filter(s => !incomingEdges.has(s.id));
-  const startNodes = roots.length > 0 ? roots : [data.screens[0]];
-  
-  const queue: { id: string, level: number }[] = startNodes.map(n => ({ id: n.id, level: 0 }));
-  
-  while (queue.length > 0) {
-    const { id, level } = queue.shift()!;
-    if (processed.has(id)) continue;
-    processed.add(id);
-    levels[id] = level;
-    const children = data.edges.filter(e => e.fromId === id).map(e => e.toId);
-    children.forEach(childId => {
-      if (!processed.has(childId)) queue.push({ id: childId, level: level + 1 });
-    });
-  }
+  // 1. Sort screens strictly by frameIndex to ensure chronological order (Time-based)
+  // This ensures the visual flow matches the video timeline exactly.
+  const sortedScreens = [...data.screens].sort((a, b) => a.frameIndex - b.frameIndex);
 
-  data.screens.forEach(s => {
-    if (levels[s.id] === undefined) levels[s.id] = 0;
+  // 2. Grid Layout Calculation
+  const nodes = sortedScreens.map((screen, index) => {
+    // Calculate Grid Position (0-based)
+    const col = index % maxColumns;
+    const row = Math.floor(index / maxColumns);
+
+    // Calculate Pixel Position
+    // Adding 100px initial padding
+    const x = 100 + col * (nodeWidth + gapX);
+    const y = 100 + row * (nodeHeight + gapY);
+
+    return { 
+      ...screen, 
+      level: row,         // Reuse 'level' as Row index
+      orderInLevel: col,  // Reuse 'orderInLevel' as Column index
+      x, 
+      y 
+    };
   });
 
-  const nodesByLevel: Record<number, string[]> = {};
-  Object.entries(levels).forEach(([id, level]) => {
-    if (!nodesByLevel[level]) nodesByLevel[level] = [];
-    nodesByLevel[level].push(id);
-  });
+  // 3. Calculate Canvas Dimensions
+  const numRows = Math.ceil(sortedScreens.length / maxColumns);
+  const numCols = Math.min(sortedScreens.length, maxColumns);
 
-  const maxLevel = Math.max(...Object.values(levels));
-  const finalPositions: Record<string, number> = {};
-  const getFrameIndex = (id: string) => data.screens.find(s => s.id === id)?.frameIndex || 0;
+  const width = 100 + numCols * (nodeWidth + gapX) + 100;
+  const height = 100 + numRows * (nodeHeight + gapY) + 100;
 
-  for (let l = 0; l <= maxLevel; l++) {
-    const nodeIds = nodesByLevel[l] || [];
-    if (l === 0) {
-      nodeIds.forEach((id, idx) => finalPositions[id] = idx);
-    } else {
-      const nodeWeights = nodeIds.map(id => {
-        const parents = data.edges.filter(e => e.toId === id).map(e => e.fromId);
-        const validParents = parents.filter(pid => finalPositions[pid] !== undefined);
-        let parentWeight = validParents.length === 0 ? 9999 : validParents.reduce((sum, pid) => sum + finalPositions[pid], 0) / validParents.length;
-        return { id, parentWeight, timeWeight: getFrameIndex(id) };
-      });
-
-      nodeWeights.sort((a, b) => {
-        if (Math.abs(a.parentWeight - b.parentWeight) > 0.01) return a.parentWeight - b.parentWeight;
-        return a.timeWeight - b.timeWeight;
-      });
-      nodeWeights.forEach((nw, idx) => finalPositions[nw.id] = idx);
-    }
-  }
-
-  const levelWidths: Record<number, number> = {};
-  for (let l = 0; l <= maxLevel; l++) {
-    const count = nodesByLevel[l]?.length || 0;
-    levelWidths[l] = count * (nodeWidth + gapX) - gapX;
-  }
-  const maxRowWidth = Math.max(...Object.values(levelWidths), 0);
-
-  const nodes = data.screens.map(screen => {
-    const level = levels[screen.id] || 0;
-    const order = finalPositions[screen.id] || 0;
-    const y = level * (nodeHeight + gapY) + 100;
-    const currentRowWidth = levelWidths[level] || 0;
-    const centerOffset = (maxRowWidth - currentRowWidth) / 2;
-    const x = centerOffset + (order * (nodeWidth + gapX)) + 100;
-    return { ...screen, level, orderInLevel: order, x, y };
-  });
-
-  return { 
-    nodes, 
-    width: maxRowWidth + 600, 
-    height: (maxLevel + 1) * (nodeHeight + gapY) + 400 
-  };
+  return { nodes, width, height };
 };
 
 export const Whiteboard = forwardRef<WhiteboardHandle, WhiteboardProps>(({ data, frames }, ref) => {
   const [nodes, setNodes] = useState<LayoutNode[]>([]);
   const [canvasSize, setCanvasSize] = useState({ w: 2000, h: 2000 });
-  const [transform, setTransform] = useState({ x: 0, y: 0, scale: 0.4 }); // Zoomed out default for large cards
+  const [transform, setTransform] = useState({ x: 0, y: 0, scale: 0.25 }); // Start zoomed out more to see the grid
   
   const [isSpacePressed, setIsSpacePressed] = useState(false);
   const [interactionMode, setInteractionMode] = useState<'IDLE' | 'PANNING'>('IDLE');
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  
   const [dragStartMousePos, setDragStartMousePos] = useState({ x: 0, y: 0 });
   const [dragStartTransform, setDragStartTransform] = useState({ x: 0, y: 0 });
 
@@ -156,6 +114,47 @@ export const Whiteboard = forwardRef<WhiteboardHandle, WhiteboardProps>(({ data,
                 clone.style.height = '800px';
                 clone.style.boxShadow = 'none'; // Optional: remove shadow for cleaner cut
                 
+                // Remove selection rings/borders from export
+                clone.classList.remove('ring-4', 'ring-indigo-500', 'ring-offset-4');
+                
+                // --- EXPORT FIX: Image Stretching ---
+                // html2canvas often fails to render object-fit: contain correctly.
+                // We must manually calculate the aspect ratio and set exact width/height on the img element.
+                const img = clone.querySelector('img') as HTMLImageElement;
+                const originalImg = element.querySelector('img') as HTMLImageElement;
+
+                if (img && originalImg && originalImg.naturalWidth) {
+                    const natW = originalImg.naturalWidth;
+                    const natH = originalImg.naturalHeight;
+                    // The container size in the card
+                    const containerW = 1024;
+                    const containerH = 550;
+
+                    const scale = Math.min(containerW / natW, containerH / natH);
+                    const finalW = Math.floor(natW * scale);
+                    const finalH = Math.floor(natH * scale);
+
+                    // Reset classes that force full width/height
+                    img.classList.remove('w-full', 'h-full', 'object-contain', 'object-top');
+                    
+                    // Apply calculated dimensions
+                    img.style.width = `${finalW}px`;
+                    img.style.height = `${finalH}px`;
+                    
+                    // Emulate object-position: top center
+                    img.style.display = 'block';
+                    img.style.marginLeft = 'auto';
+                    img.style.marginRight = 'auto';
+                    img.style.marginTop = '0'; 
+                    
+                    // Ensure parent doesn't force vertical centering if we want top alignment
+                    const imgParent = img.parentElement;
+                    if (imgParent) {
+                        imgParent.classList.remove('items-center', 'justify-center');
+                        imgParent.classList.add('items-start'); 
+                    }
+                }
+
                 // --- EXPORT FIX: Text Layout Adjustments ---
                 // The text container is usually the last child (Image div is first, Text div is second)
                 const textContainer = clone.lastElementChild as HTMLElement;
@@ -200,13 +199,12 @@ export const Whiteboard = forwardRef<WhiteboardHandle, WhiteboardProps>(({ data,
 
                 document.body.appendChild(clone);
 
+                // Naming convention: Row.Col-Label
                 const yAxis = node.level + 1;
                 const xAxis = node.orderInLevel + 1;
-                let filePrefix = `${yAxis}.${xAxis}`;
-                if (node.level === 0 && node.orderInLevel === 0) filePrefix = "1";
-
+                
                 const safeLabel = node.label.replace(/[^a-z0-9\u4e00-\u9fa5]/gi, '_'); 
-                const filename = `${filePrefix}-${safeLabel}.png`;
+                const filename = `${yAxis}.${xAxis}-${safeLabel}.png`;
 
                 try {
                     const canvas = await html2canvas(clone, {
@@ -251,8 +249,9 @@ export const Whiteboard = forwardRef<WhiteboardHandle, WhiteboardProps>(({ data,
       });
       // Center the view initially
       const containerW = containerRef.current?.clientWidth || window.innerWidth;
-      const initialX = (containerW - layout.width * 0.4) / 2; // Adjusted for new scale
-      setTransform({ x: initialX, y: 50, scale: 0.4 }); 
+      const initialX = 50; 
+      // Adjusted initial scale to see more cards at once since they are packed tightly
+      setTransform({ x: initialX, y: 50, scale: 0.25 }); 
     }
   }, [data]);
 
@@ -262,15 +261,20 @@ export const Whiteboard = forwardRef<WhiteboardHandle, WhiteboardProps>(({ data,
       if (e.key === ' ') { 
         e.preventDefault(); 
         setIsSpacePressed(true);
-        setInteractionMode('PANNING');
+        // Only set cursor to grab, don't set PANNING mode until mouse down
         if (containerRef.current) containerRef.current.style.cursor = 'grab';
       }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
       if (e.key === ' ') {
         setIsSpacePressed(false);
-        setInteractionMode('IDLE');
-        if (containerRef.current) containerRef.current.style.cursor = 'default';
+        // If we were panning, we might want to stop, or wait for mouse up.
+        // Usually, releasing space stops the *ability* to start new pans, 
+        // but if dragging, we often let it finish. 
+        // For simplicity, we reset cursor.
+        if (interactionMode === 'IDLE') {
+             if (containerRef.current) containerRef.current.style.cursor = 'default';
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -279,14 +283,26 @@ export const Whiteboard = forwardRef<WhiteboardHandle, WhiteboardProps>(({ data,
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, []);
+  }, [interactionMode]);
 
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (isSpacePressed || e.button === 1 || e.button === 0) {
+    // FIX: Only Pan if Space is pressed (for left click) OR if Middle Mouse (button 1)
+    const isLeftClick = e.button === 0;
+    const isMiddleClick = e.button === 1;
+
+    if ((isLeftClick && isSpacePressed) || isMiddleClick) {
       setInteractionMode('PANNING');
       setDragStartMousePos({ x: e.clientX, y: e.clientY });
       setDragStartTransform({ x: transform.x, y: transform.y });
       if (containerRef.current) containerRef.current.style.cursor = 'grabbing';
+      e.preventDefault(); // Prevent text selection/highlighting during pan
+    } else {
+      // Normal click: If it hit the background directly (not handled by child), deselect
+      // However, we rely on handleNodeClick stopping propagation. 
+      // If we reach here and it's a left click, it might be a background click.
+      if (isLeftClick) {
+         setSelectedNodeId(null);
+      }
     }
   };
 
@@ -300,7 +316,7 @@ export const Whiteboard = forwardRef<WhiteboardHandle, WhiteboardProps>(({ data,
 
   const handleMouseUp = () => {
     if (interactionMode === 'PANNING') {
-      setInteractionMode(isSpacePressed ? 'PANNING' : 'IDLE');
+      setInteractionMode('IDLE');
       if (containerRef.current) containerRef.current.style.cursor = isSpacePressed ? 'grab' : 'default';
     }
   };
@@ -310,11 +326,19 @@ export const Whiteboard = forwardRef<WhiteboardHandle, WhiteboardProps>(({ data,
       e.preventDefault();
       const zoomSensitivity = 0.001;
       const delta = -e.deltaY * zoomSensitivity;
-      const newScale = Math.min(Math.max(transform.scale + delta, 0.1), 3);
+      const newScale = Math.min(Math.max(transform.scale + delta, 0.05), 3);
       setTransform(prev => ({ ...prev, scale: newScale }));
     } else {
        setTransform(prev => ({ ...prev, x: prev.x - e.deltaX, y: prev.y - e.deltaY }));
     }
+  };
+
+  const handleNodeClick = (e: React.MouseEvent, id: string) => {
+      // If space is pressed, we are likely trying to pan, so don't select
+      if (isSpacePressed) return;
+      
+      e.stopPropagation(); // Prevent background click (deselect)
+      setSelectedNodeId(id);
   };
 
   return (
@@ -324,17 +348,17 @@ export const Whiteboard = forwardRef<WhiteboardHandle, WhiteboardProps>(({ data,
         <button className="p-2 hover:bg-gray-100 rounded-lg text-gray-600" onClick={() => setTransform(t => ({...t, scale: Math.min(t.scale + 0.1, 3)}))}>
           <Plus className="w-5 h-5" />
         </button>
-        <button className="p-2 hover:bg-gray-100 rounded-lg text-gray-600" onClick={() => setTransform(t => ({...t, scale: Math.max(t.scale - 0.1, 0.1)}))}>
+        <button className="p-2 hover:bg-gray-100 rounded-lg text-gray-600" onClick={() => setTransform(t => ({...t, scale: Math.max(t.scale - 0.1, 0.05)}))}>
           <Minus className="w-5 h-5" />
         </button>
-        <button className="p-2 hover:bg-gray-100 rounded-lg text-gray-600" onClick={() => setTransform({ x: 0, y: 0, scale: 0.4 })}>
+        <button className="p-2 hover:bg-gray-100 rounded-lg text-gray-600" onClick={() => setTransform({ x: 50, y: 50, scale: 0.25 })}>
            <RotateCcw className="w-4 h-4" />
         </button>
       </div>
 
       <div className="absolute top-6 left-6 z-50 bg-white/80 backdrop-blur px-4 py-2 rounded-lg shadow-sm border border-gray-100 text-sm text-gray-500 pointer-events-none">
         <span className="flex items-center gap-2">
-            <Move className="w-4 h-4" /> Space + Drag to Pan
+            <Move className="w-4 h-4" /> Hold Space + Drag to Pan
         </span>
       </div>
 
@@ -358,11 +382,16 @@ export const Whiteboard = forwardRef<WhiteboardHandle, WhiteboardProps>(({ data,
           {/* Nodes */}
           {nodes.map(node => {
             const frame = frames[node.frameIndex];
+            const isSelected = selectedNodeId === node.id;
+
             return (
               <div
                 key={node.id}
                 id={`node-card-${node.id}`}
-                className="absolute bg-white rounded-3xl shadow-[0_20px_50px_rgb(0,0,0,0.1)] flex flex-col overflow-hidden border border-gray-100"
+                onClick={(e) => handleNodeClick(e, node.id)}
+                className={`absolute bg-white rounded-3xl shadow-[0_20px_50px_rgb(0,0,0,0.1)] flex flex-col overflow-hidden border transition-shadow duration-200 
+                    ${isSelected ? 'border-indigo-500 ring-4 ring-indigo-500/20 shadow-[0_20px_60px_rgb(79,70,229,0.2)]' : 'border-gray-100 hover:shadow-[0_20px_50px_rgb(0,0,0,0.15)]'}
+                `}
                 style={{
                   left: node.x,
                   top: node.y,

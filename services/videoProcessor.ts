@@ -12,8 +12,9 @@ const calculateSimilarity = (data1: Uint8ClampedArray, data2: Uint8ClampedArray)
   const step = 4; 
   const totalPixels = data1.length / step;
   
-  // Early Exit Threshold: If > 1% different, it's a new frame.
-  const maxDiffPixels = totalPixels * 0.01; 
+  // Early Exit Threshold: If > 0.5% different, it's considered a new frame.
+  // Lowered from 1% to capture more subtle changes (e.g. typing, small toasts).
+  const maxDiffPixels = totalPixels * 0.005; 
 
   for (let i = 0; i < data1.length; i += step) {
     const rDiff = Math.abs(data1[i] - data2[i]);
@@ -63,7 +64,8 @@ const isLowComplexity = (data: Uint8ClampedArray): boolean => {
   const meanVariance = varianceSum / count;
   const stdDev = Math.sqrt(meanVariance);
 
-  return stdDev < 5; 
+  // Lowered threshold from 5 to 2 to ensure we don't skip simple white screens
+  return stdDev < 2; 
 };
 
 /**
@@ -71,7 +73,7 @@ const isLowComplexity = (data: Uint8ClampedArray): boolean => {
  */
 export const extractFramesFromVideo = async (
   videoFile: File,
-  scanInterval: number = 0.25, // Adjusted to 4fps for better efficiency while maintaining good coverage
+  scanInterval: number = 0.2, // Increased scan rate (5fps) to capture more transition details
   maxFrames: number = 600
 ): Promise<FrameData[]> => {
   return new Promise((resolve, reject) => {
@@ -158,7 +160,9 @@ export const extractFramesFromVideo = async (
         // Don't check duplication for the very first frame
         if (lastCapturedDiffData && !isStart) {
           const similarity = calculateSimilarity(lastCapturedDiffData, currentDiffData);
-          if (similarity > 0.99) {
+          // High threshold: Frames must be 99.5% identical to be skipped.
+          // This allows frames with minor changes (like cursors moving, buttons pressing) to be captured.
+          if (similarity > 0.995) {
             isDuplicate = true;
           }
         }
