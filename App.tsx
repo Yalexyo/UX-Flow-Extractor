@@ -77,7 +77,7 @@ export default function App() {
           <div className="bg-indigo-600 p-1.5 rounded-lg">
              <Play className="w-5 h-5 text-white fill-current" />
           </div>
-          <h1 className="font-bold text-xl tracking-tight">UX Flow Extractor</h1>
+          <h1 className="font-bold text-xl tracking-tight">UI Extractor</h1>
         </div>
         
         {/* Toolbar Actions */}

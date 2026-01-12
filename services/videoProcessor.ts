@@ -1,204 +1,144 @@
 import { FrameData } from '../types';
 
 /**
- * Calculates the similarity between two image data arrays.
- * Returns a value between 0 (completely different) and 1 (identical).
+ * Calculates the percentage difference between two image buffers (64x64).
+ * Returns 0.0 to 1.0.
  */
-const calculateSimilarity = (data1: Uint8ClampedArray, data2: Uint8ClampedArray): number => {
-  if (data1.length !== data2.length) return 0;
-  
-  let diffCount = 0;
-  // Use a larger step for diffing to be faster, 4 bytes = 1 pixel.
-  const step = 4; 
-  const totalPixels = data1.length / step;
-  
-  // Early Exit Threshold: If > 0.5% different, it's considered a new frame.
-  // Lowered from 1% to capture more subtle changes (e.g. typing, small toasts).
-  const maxDiffPixels = totalPixels * 0.005; 
-
-  for (let i = 0; i < data1.length; i += step) {
-    const rDiff = Math.abs(data1[i] - data2[i]);
-    const gDiff = Math.abs(data1[i + 1] - data2[i + 1]);
-    const bDiff = Math.abs(data1[i + 2] - data2[i + 2]);
+const getStructuralDifference = (
+  curr: Uint8ClampedArray, 
+  prev: Uint8ClampedArray
+): number => {
+  let diffSum = 0;
+  const len = curr.length;
+  // Loop through pixels (R, G, B, A)
+  // We only care about visual difference, so we sum absolute delta of RGB
+  for (let i = 0; i < len; i += 4) {
+    const rDiff = Math.abs(curr[i] - prev[i]);
+    const gDiff = Math.abs(curr[i + 1] - prev[i + 1]);
+    const bDiff = Math.abs(curr[i + 2] - prev[i + 2]);
     
-    // If the color difference of a pixel is significant
-    if (rDiff + gDiff + bDiff > 40) {
-      diffCount++;
-      // Optimization: If frames are already too different, stop checking
-      if (diffCount > maxDiffPixels) {
-        return 0; 
-      }
+    // Noise floor: Ignore changes smaller than 15/255 (video compression artifacts)
+    if (rDiff + gDiff + bDiff > 45) {
+      diffSum++;
     }
   }
   
-  return 1 - (diffCount / totalPixels);
+  // Return fraction of pixels that changed significantly
+  // divide by (len / 4) because we are counting pixels, not channels
+  return diffSum / (len / 4);
 };
 
 /**
- * Checks if an image is "boring" (low complexity/entropy).
+ * Checks if a frame is a solid color (e.g., black screen, white loading).
  */
-const isLowComplexity = (data: Uint8ClampedArray): boolean => {
-  const step = 4 * 5; // Sample every 5th pixel for complexity
+const isSolidColor = (data: Uint8ClampedArray): boolean => {
   let rSum = 0, gSum = 0, bSum = 0;
-  let count = 0;
-
-  for (let i = 0; i < data.length; i += step) {
+  const totalPixels = data.length / 4;
+  
+  // Calculate Average
+  for (let i = 0; i < data.length; i += 4) {
     rSum += data[i];
     gSum += data[i + 1];
     bSum += data[i + 2];
-    count++;
-  }
-
-  const avgR = rSum / count;
-  const avgG = gSum / count;
-  const avgB = bSum / count;
-
-  let varianceSum = 0;
-  for (let i = 0; i < data.length; i += step) {
-    const dr = data[i] - avgR;
-    const dg = data[i + 1] - avgG;
-    const db = data[i + 2] - avgB;
-    varianceSum += (dr*dr + dg*dg + db*db);
   }
   
-  const meanVariance = varianceSum / count;
-  const stdDev = Math.sqrt(meanVariance);
+  const avgR = rSum / totalPixels;
+  const avgG = gSum / totalPixels;
+  const avgB = bSum / totalPixels;
+  
+  // Check deviation from average (Scan center and corners)
+  // Simplified: just check center pixel vs average
+  const centerIdx = Math.floor(totalPixels / 2) * 4;
+  const centerDiff = Math.abs(data[centerIdx] - avgR) + Math.abs(data[centerIdx+1] - avgG) + Math.abs(data[centerIdx+2] - avgB);
 
-  // Lowered threshold from 5 to 2 to ensure we don't skip simple white screens
-  return stdDev < 2; 
+  return centerDiff < 10; // Very strict solid color check
 };
 
-/**
- * Extracts frames from a video file.
- */
 export const extractFramesFromVideo = async (
   videoFile: File,
-  scanInterval: number = 0.2, // Increased scan rate (5fps) to capture more transition details
-  maxFrames: number = 600
+  scanInterval: number = 0.3, // Check every 0.3s
+  maxFrames: number = 50 // Limit total output to prevent UI lag
 ): Promise<FrameData[]> => {
   return new Promise((resolve, reject) => {
     const video = document.createElement('video');
     const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     
+    // Small canvas for fast structural diffing
     const diffCanvas = document.createElement('canvas');
-    const diffCtx = diffCanvas.getContext('2d');
-    // Reduced size for faster diffing (100x100 = 10k pixels)
-    // 100px is sufficient to detect UI changes
-    const DIFF_SIZE = 100; 
+    const diffCtx = diffCanvas.getContext('2d', { willReadFrequently: true });
+    const DIFF_SIZE = 64; // 64x64 grid is sufficient for UI structure
     diffCanvas.width = DIFF_SIZE;
     diffCanvas.height = DIFF_SIZE;
 
     const frames: FrameData[] = [];
-    let lastCapturedDiffData: Uint8ClampedArray | null = null;
+    let prevDiffData: Uint8ClampedArray | null = null;
     
     const url = URL.createObjectURL(videoFile);
     video.src = url;
     video.muted = true;
     video.playsInline = true;
-    video.crossOrigin = "anonymous";
-
-    video.addEventListener('loadeddata', async () => {
-      const duration = video.duration;
-      const checkPoints: number[] = [];
-      
-      // 1. Force Start Frame (Time 0)
-      checkPoints.push(0);
-      
-      // 2. Add interval checkpoints
-      for (let t = scanInterval; t < duration; t += scanInterval) {
-        checkPoints.push(t);
-      }
-      
-      // 3. Force End Frame
-      // We use duration - 0.05s to avoid potential issues with seeking exactly to the end (EOF)
-      // which sometimes results in a black frame or error.
-      const lastTime = Math.max(0, duration - 0.05);
-      
-      // Only add if it's not too close to the last interval point (avoid duplicates)
-      if (checkPoints.length === 0 || lastTime - checkPoints[checkPoints.length - 1] > 0.1) {
-         checkPoints.push(lastTime);
-      }
-
-      let currentCheckIndex = 0;
-      
-      // OPTIMIZATION: Limit output resolution
-      // Processing 4K frames is slow and unnecessary for AI analysis.
-      // Cap max dimension to 1500px to speed up toDataURL() and reduce memory usage.
-      const MAX_DIMENSION = 1500;
-      const maxSide = Math.max(video.videoWidth, video.videoHeight);
-      const scale = maxSide > MAX_DIMENSION ? MAX_DIMENSION / maxSide : 1.0;
-
+    
+    video.onloadeddata = () => {
+      // 1. Setup Canvas Size (Max 1280px to save memory)
+      const MAX_SIDE = 1280;
+      const scale = Math.min(1, MAX_SIDE / Math.max(video.videoWidth, video.videoHeight));
       canvas.width = Math.floor(video.videoWidth * scale);
       canvas.height = Math.floor(video.videoHeight * scale);
+      
+      let currentTime = 0;
+      const duration = video.duration;
 
-      const processNextCheckpoint = () => {
-        if (currentCheckIndex >= checkPoints.length || frames.length >= maxFrames) {
+      const processFrame = async () => {
+        if (currentTime > duration || frames.length >= maxFrames) {
           URL.revokeObjectURL(url);
           resolve(frames);
           return;
         }
 
-        const time = checkPoints[currentCheckIndex];
-        video.currentTime = time;
+        video.currentTime = currentTime;
       };
 
-      video.addEventListener('seeked', () => {
-        if (!ctx || !diffCtx) return;
+      video.onseeked = () => {
+        if (!diffCtx || !ctx) return;
 
-        // Draw small version for fast analysis
+        // 1. Draw tiny version for Diffing
         diffCtx.drawImage(video, 0, 0, DIFF_SIZE, DIFF_SIZE);
         const currentDiffData = diffCtx.getImageData(0, 0, DIFF_SIZE, DIFF_SIZE).data;
 
-        // Determine critical frames
-        const isStart = currentCheckIndex === 0;
-        const isEnd = currentCheckIndex === checkPoints.length - 1;
+        // 2. Logic to Decide if we Keep this Frame
+        let shouldKeep = false;
 
-        const isBoring = isLowComplexity(currentDiffData);
-
-        let isDuplicate = false;
-        // Don't check duplication for the very first frame
-        if (lastCapturedDiffData && !isStart) {
-          const similarity = calculateSimilarity(lastCapturedDiffData, currentDiffData);
-          // High threshold: Frames must be 99.5% identical to be skipped.
-          // This allows frames with minor changes (like cursors moving, buttons pressing) to be captured.
-          if (similarity > 0.995) {
-            isDuplicate = true;
+        if (!prevDiffData) {
+          shouldKeep = true; // Always keep first frame
+        } else {
+          // Compare with previous kept frame
+          const diffPercent = getStructuralDifference(currentDiffData, prevDiffData);
+          
+          // CRITICAL TUNING:
+          // > 0.02 (2%) change: Keeps valid UI changes (keyboard popping up, menus).
+          // < 0.02 (2%) change: Discards duplicates and video noise.
+          if (diffPercent > 0.02 && !isSolidColor(currentDiffData)) {
+            shouldKeep = true;
           }
         }
 
-        // Capture Logic:
-        // 1. ALWAYS capture Start and End frames.
-        // 2. For others, capture only if unique AND not boring.
-        let shouldCapture = false;
-
-        if (isStart || isEnd) {
-            shouldCapture = true;
-        } else {
-            shouldCapture = !isBoring && !isDuplicate;
-        }
-        
-        if (shouldCapture) {
+        if (shouldKeep) {
+          // Draw full res version only if we are keeping it
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          // 0.8 quality is a good balance for speed/size
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.8); 
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
           
-          frames.push({
-            time: video.currentTime,
-            dataUrl: dataUrl
-          });
-          lastCapturedDiffData = currentDiffData;
-        } 
-        
-        currentCheckIndex++;
-        processNextCheckpoint();
-      });
+          frames.push({ time: currentTime, dataUrl });
+          prevDiffData = currentDiffData; // Update baseline
+        }
 
-      processNextCheckpoint();
-    });
+        currentTime += scanInterval;
+        processFrame();
+      };
 
-    video.addEventListener('error', (e) => {
-      reject(new Error("Error loading video file."));
-    });
+      processFrame();
+    };
+
+    video.onerror = () => reject(new Error("Failed to load video"));
   });
 };
